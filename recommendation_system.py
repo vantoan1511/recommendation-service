@@ -63,7 +63,6 @@ def calculate_metadata_score(product: Product, behavior: Behavior, weights: Dict
     Calculate a score for the product based on metadata matching behavior.
     """
     score = 0.0
-    # Example: prioritize products in the same category or brand as recent visits
     if product.id in behavior.favourites:
         score += weights["favourites"]
     if product.id in behavior.inCart:
@@ -99,18 +98,17 @@ def evaluate(request: RecommendationRequest):
     # Assign weights to behavior types (can be fine-tuned)
     WEIGHTS = {"favourites": 1.5, "inCart": 1.2, "recentVisits": 1.0}
 
-    # Step 1: Filter out products already in the user's behavior
-    filtered_products = [
-        product for product in available_products
-        if not is_product_in_behavior(product.id, behavior)
+    # Step 1: Separate products in behavior and products not in behavior
+    behavior_products = [
+        product for product in available_products if is_product_in_behavior(product.id, behavior)
     ]
-
-    if not filtered_products:
-        return {"recommendations": []}  # No new products to recommend
+    non_behavior_products = [
+        product for product in available_products if not is_product_in_behavior(product.id, behavior)
+    ]
 
     # Step 2: Create an interaction DataFrame dynamically from behavior
     interactions = []
-    for product in filtered_products:
+    for product in non_behavior_products:
         metadata_score = calculate_metadata_score(product, behavior, WEIGHTS)
         interactions.append([0, product.id, metadata_score])  # User ID is 0 (session-based)
 
@@ -122,9 +120,9 @@ def evaluate(request: RecommendationRequest):
     model = SVD()
     model.fit(trainset)
 
-    # Step 4: Score each product using collaborative filtering and metadata
+    # Step 4: Score non-behavior products using collaborative filtering and metadata
     recommendations = []
-    for product in filtered_products:
+    for product in non_behavior_products:
         predicted_rating = model.predict(0, product.id).est
         metadata_score = calculate_metadata_score(product, behavior, WEIGHTS)
         total_score = predicted_rating + metadata_score
@@ -164,10 +162,51 @@ def evaluate(request: RecommendationRequest):
             "score": total_score,
         })
 
-    # Step 5: Sort products by their total score
-    sorted_recommendations = sorted(recommendations, key=lambda x: x["score"], reverse=True)
+    recommendations = sorted(recommendations, key=lambda x: x["score"], reverse=True)
 
-    return {"recommendations": sorted_recommendations}
+    # Step 5: Append behavior products to the end with lower priority
+    for product in behavior_products:
+        metadata_score = calculate_metadata_score(product, behavior, WEIGHTS)
+        recommendations.append({
+            "id": product.id,
+            "name": product.name,
+            "slug": product.slug,
+            "basePrice": product.basePrice,
+            "salePrice": product.salePrice,
+            "stockQuantity": product.stockQuantity,
+            "weight": product.weight,
+            "color": product.color,
+            "processor": product.processor,
+            "gpu": product.gpu,
+            "ram": product.ram,
+            "storageType": product.storageType,
+            "storageCapacity": product.storageCapacity,
+            "os": product.os,
+            "screenSize": product.screenSize,
+            "batteryCapacity": product.batteryCapacity,
+            "warranty": product.warranty,
+            "model": {
+                "id": product.model.id,
+                "name": product.model.name,
+                "slug": product.model.slug,
+                "brand": {
+                    "id": product.model.brand.id,
+                    "name": product.model.brand.name,
+                    "slug": product.model.brand.slug,
+                },
+            },
+            "category": {
+                "id": product.category.id,
+                "name": product.category.name,
+                "slug": product.category.slug,
+            },
+            "score": metadata_score,  # Only metadata score for behavior products
+        })
+
+
+
+
+    return {"recommendations": recommendations}
 
 
 # === Step 4: Run Server (For Local Testing) ===
