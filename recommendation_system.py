@@ -1,5 +1,7 @@
 import pandas as pd
 from surprise import SVD, Dataset, Reader
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List, Dict, Any
@@ -43,6 +45,7 @@ class Product(BaseModel):
     warranty: float
     model: Model
     category: Category
+    rating: float  # Initial product rating
 
 class Behavior(BaseModel):
     favourites: List[int]
@@ -58,6 +61,7 @@ class RecommendationResponse(BaseModel):
 
 
 # === Step 2: Helper Functions ===
+
 def calculate_metadata_score(product: Product, behavior: Behavior, weights: Dict[str, float]) -> float:
     """
     Calculate a score for the product based on metadata matching behavior.
@@ -83,8 +87,32 @@ def is_product_in_behavior(product_id: int, behavior: Behavior) -> bool:
     )
 
 
+def calculate_content_scores(available_products: List[Product]) -> Dict[int, List[float]]:
+    """
+    Calculate content-based similarity scores for products using cosine similarity.
+    """
+    # Combine product metadata into a single text field
+    product_features = [
+        f"{p.category.name} {p.model.brand.name} {p.color} {p.processor} {p.gpu}"
+        for p in available_products
+    ]
+
+    # Vectorize product features
+    vectorizer = TfidfVectorizer()
+    feature_matrix = vectorizer.fit_transform(product_features)
+
+    # Compute pairwise cosine similarity
+    similarity_matrix = cosine_similarity(feature_matrix)
+
+    # Create a mapping of product ID to its similarity scores
+    content_scores = {product.id: similarity_matrix[idx] for idx, product in enumerate(available_products)}
+
+    return content_scores
+
+
 # === Step 3: API Endpoint ===
-@app.post("/evaluate", response_model=RecommendationResponse)
+
+@app.post("/api/recommendations", response_model=RecommendationResponse)
 def evaluate(request: RecommendationRequest):
     """
     Evaluate user behavior and recommend products from the provided available products.
@@ -106,62 +134,43 @@ def evaluate(request: RecommendationRequest):
         product for product in available_products if not is_product_in_behavior(product.id, behavior)
     ]
 
-    # Step 2: Create an interaction DataFrame dynamically from behavior
+    # Step 2: Collaborative Filtering Scores (using SVD)
+    # Prepare interaction data for collaborative filtering
     interactions = []
     for product in non_behavior_products:
         metadata_score = calculate_metadata_score(product, behavior, WEIGHTS)
         interactions.append([0, product.id, metadata_score])  # User ID is 0 (session-based)
 
-    # Step 3: Train a lightweight collaborative filtering model
+    # Train collaborative filtering model
     interaction_df = pd.DataFrame(interactions, columns=["user_id", "product_id", "rating"])
     reader = Reader(rating_scale=(0, 5))
     surprise_data = Dataset.load_from_df(interaction_df, reader)
     trainset = surprise_data.build_full_trainset()
-    model = SVD()
-    model.fit(trainset)
+    cf_model = SVD(random_state=42)
+    cf_model.fit(trainset)
 
-    # Step 4: Score non-behavior products using collaborative filtering and metadata
+    collaborative_scores = {
+        product.id: cf_model.predict(0, product.id).est for product in non_behavior_products
+    }
+
+    # Step 3: Content-Based Filtering Scores
+    content_scores = calculate_content_scores(available_products)
+
+    # Step 4: Combine Scores
+    alpha = 0.6  # Weight for collaborative filtering; 1-alpha is for content-based filtering
     recommendations = []
+
     for product in non_behavior_products:
-        predicted_rating = model.predict(0, product.id).est
-        metadata_score = calculate_metadata_score(product, behavior, WEIGHTS)
-        total_score = predicted_rating + metadata_score
+        cf_score = collaborative_scores.get(product.id, 0.0)
+        content_score = content_scores[product.id][0]  # Self-similarity with itself
+        final_score = alpha * cf_score + (1 - alpha) * content_score
+
         recommendations.append({
             "id": product.id,
-            "name": product.name,
-            "slug": product.slug,
-            "basePrice": product.basePrice,
-            "salePrice": product.salePrice,
-            "stockQuantity": product.stockQuantity,
-            "weight": product.weight,
-            "color": product.color,
-            "processor": product.processor,
-            "gpu": product.gpu,
-            "ram": product.ram,
-            "storageType": product.storageType,
-            "storageCapacity": product.storageCapacity,
-            "os": product.os,
-            "screenSize": product.screenSize,
-            "batteryCapacity": product.batteryCapacity,
-            "warranty": product.warranty,
-            "model": {
-                "id": product.model.id,
-                "name": product.model.name,
-                "slug": product.model.slug,
-                "brand": {
-                    "id": product.model.brand.id,
-                    "name": product.model.brand.name,
-                    "slug": product.model.brand.slug,
-                },
-            },
-            "category": {
-                "id": product.category.id,
-                "name": product.category.name,
-                "slug": product.category.slug,
-            },
-            "score": total_score,
+            "score": final_score,
         })
 
+    # Sort recommendations by score
     recommendations = sorted(recommendations, key=lambda x: x["score"], reverse=True)
 
     # Step 5: Append behavior products to the end with lower priority
@@ -169,42 +178,8 @@ def evaluate(request: RecommendationRequest):
         metadata_score = calculate_metadata_score(product, behavior, WEIGHTS)
         recommendations.append({
             "id": product.id,
-            "name": product.name,
-            "slug": product.slug,
-            "basePrice": product.basePrice,
-            "salePrice": product.salePrice,
-            "stockQuantity": product.stockQuantity,
-            "weight": product.weight,
-            "color": product.color,
-            "processor": product.processor,
-            "gpu": product.gpu,
-            "ram": product.ram,
-            "storageType": product.storageType,
-            "storageCapacity": product.storageCapacity,
-            "os": product.os,
-            "screenSize": product.screenSize,
-            "batteryCapacity": product.batteryCapacity,
-            "warranty": product.warranty,
-            "model": {
-                "id": product.model.id,
-                "name": product.model.name,
-                "slug": product.model.slug,
-                "brand": {
-                    "id": product.model.brand.id,
-                    "name": product.model.brand.name,
-                    "slug": product.model.brand.slug,
-                },
-            },
-            "category": {
-                "id": product.category.id,
-                "name": product.category.name,
-                "slug": product.category.slug,
-            },
             "score": metadata_score,  # Only metadata score for behavior products
         })
-
-
-
 
     return {"recommendations": recommendations}
 
