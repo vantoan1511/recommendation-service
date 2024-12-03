@@ -12,40 +12,24 @@ app = FastAPI()
 class Brand(BaseModel):
     id: int
     name: str
-    slug: str
 
 class Model(BaseModel):
     id: int
     name: str
-    slug: str
     brand: Brand
 
 class Category(BaseModel):
     id: int
     name: str
-    slug: str
 
 class Product(BaseModel):
     id: int
     name: str
-    slug: str
-    basePrice: float
-    salePrice: float
-    stockQuantity: int
-    weight: float
     color: str
     processor: str
     gpu: str
-    ram: int
-    storageType: str
-    storageCapacity: int
-    os: str
-    screenSize: float
-    batteryCapacity: float
-    warranty: float
     model: Model
     category: Category
-    rating: float  # Initial product rating
 
 class Behavior(BaseModel):
     favourites: List[int]
@@ -93,7 +77,7 @@ def calculate_content_scores(available_products: List[Product]) -> Dict[int, Lis
     """
     # Combine product metadata into a single text field
     product_features = [
-        f"{p.category.name} {p.model.brand.name} {p.color} {p.processor} {p.gpu}"
+        f"{p.category.name} {p.model.name} {p.model.brand.name} {p.category.name} {p.color} {p.processor} {p.gpu}"
         for p in available_products
     ]
 
